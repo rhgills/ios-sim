@@ -1,0 +1,2 @@
+REPOSITORY_ROOT=$(dirname $0)
+xcodebuild DSTROOT="$REPOSITORY_ROOT" INSTALL_PATH=/./ install
