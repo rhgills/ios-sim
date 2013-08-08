@@ -10,6 +10,7 @@
 #import "nsprintf.h"
 #import <sys/types.h>
 #import <sys/stat.h>
+#import <objc/objc.h>
 
 NSString *simulatorPrefrencesName = @"com.apple.iphonesimulator";
 NSString *deviceProperty = @"SimulateDevice";
@@ -36,6 +37,7 @@ NSString *deviceIpadRetina = @"iPad (Retina)";
   fprintf(stderr, "  --version                       Print the version of ios-sim\n");
   fprintf(stderr, "  --help                          Show this help text\n");
   fprintf(stderr, "  --verbose                       Set the output level to verbose\n");
+  fprintf(stderr, "  --activate                      Activate after startup\n");
   fprintf(stderr, "  --exit                          Exit after startup\n");
   fprintf(stderr, "  --debug                         Attach LLDB to the application on startup\n");
   fprintf(stderr, "  --use-gdb                       Use GDB instead of LLDB. (Requires --debug)\n");
@@ -91,6 +93,7 @@ NSString *deviceIpadRetina = @"iPad (Retina)";
 - (void)session:(DTiPhoneSimulatorSession *)session didStart:(BOOL)started withError:(NSError *)error {
   if (startOnly && session) {
     nsprintf(@"Simulator started (no session)");
+    [self activateSimulatorIfRequested];
     exit(EXIT_SUCCESS);
   }
   if (started) {
@@ -109,13 +112,14 @@ NSString *deviceIpadRetina = @"iPad (Retina)";
         if (child_pid == 0) {
             execvp(args[0], args);
         } else if (child_pid < 0) {
-            nsprintf(@"Could not start debugger process: %@", errno);
+            [self log:@"Could not start debugger process: %@", errno];
             exit(EXIT_FAILURE);
         }
       }
-    if (verbose) {
-      nsprintf(@"Session started");
-    }
+    
+    [self logVerbose:@"Session started"];
+    [self activateSimulatorIfRequested];
+    
     if (exitOnStartup) {
       exit(EXIT_SUCCESS);
     }
@@ -125,6 +129,46 @@ NSString *deviceIpadRetina = @"iPad (Retina)";
   }
 }
 
+- (void)log:(NSString *)format, ... {
+  va_list ap;
+  
+  va_start(ap, format);
+  {
+    [self log:format arguments:ap];
+  }
+  va_end(ap);
+}
+
+- (void)logVerbose:(NSString *)format, ... {
+    va_list ap;
+    
+    va_start(ap, format);
+    {
+      [self logVerbose:format arguments:ap];
+    }
+    va_end(ap);
+}
+
+- (void)logVerbose:(NSString *)format arguments:(va_list)ap {
+  if (verbose)
+    [self log:format arguments:ap];
+}
+
+- (void)log:(NSString *)format arguments:(va_list)ap {
+  nsvfprintf(stderr, format, ap);
+}
+
+- (void)activateSimulatorIfRequested {
+  if (activateOnStartup)
+    [self activateSimulator];
+}
+
+- (void)activateSimulator {
+  nsprintf(@"will activate the simulator.");
+  NSRunningApplication *sim = [[NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.iphonesimulator"] lastObject];
+  [sim activateWithOptions:(NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows)];
+  nsprintf(@"did activate the simulator: %@", sim);
+}
 
 - (void)stdioDataIsAvailable:(NSNotification *)notification {
   [[notification object] readInBackgroundAndNotify];
@@ -261,6 +305,8 @@ NSString *deviceIpadRetina = @"iPad (Retina)";
   if (![session requestStartWithConfig:config timeout:timeout error:&error]) {
     nsprintf(@"Could not start simulator session: %@", error);
     return EXIT_FAILURE;
+  }else{
+    nsprintf(@"Did request simulator session start.");
   }
 
   return EXIT_SUCCESS;
@@ -293,11 +339,124 @@ NSString *deviceIpadRetina = @"iPad (Retina)";
   CFPreferencesAppSynchronize((CFStringRef)simulatorPrefrencesName);
 }
 
+// argument parser: call a method based on the argument!
+- (void)__version
+{
+  printf("%s\n", IOS_SIM_VERSION);
+  exit(EXIT_SUCCESS);
+}
+
+- (void)__help
+{
+  [self printUsage];
+  exit(EXIT_SUCCESS);
+}
+
+- (void)__verbose
+{
+  verbose = YES;
+}
+
+- (void)__exit {
+  exitOnStartup = YES;
+}
+
+- (void)__activate {
+  activateOnStartup = YES;
+}
+
+- (void)__debug {
+  shouldStartDebugger = YES;
+}
+
+- (void)__use_gdb {
+  useGDB = YES;
+}
+
+- (void)__timeout {
+  if (i + 1 < argc) {
+    timeout = [[NSString stringWithUTF8String:argv[++i]] doubleValue];
+    NSLog(@"Timeout: %f second(s)", timeout);
+  }
+}
+
+- (void)__sdk {
+  i++;
+  NSString* ver = [NSString stringWithCString:argv[i] encoding:NSUTF8StringEncoding];
+  NSArray *roots = [DTiPhoneSimulatorSystemRoot knownRoots];
+  for (DTiPhoneSimulatorSystemRoot *root in roots) {
+    NSString *v = [root sdkVersion];
+    if ([v isEqualToString:ver]) {
+      sdkRoot = root;
+      break;
+    }
+  }
+  if (sdkRoot == nil) {
+    fprintf(stderr,"Unknown or unsupported SDK version: %s\n",argv[i]);
+    [self showSDKs];
+    exit(EXIT_FAILURE);
+  }
+}
+
+- (void)__family {
+  i++;
+  family = [NSString stringWithUTF8String:argv[i]];
+}
+
+- (void)__uuid {
+  i++;
+  uuid = [NSString stringWithUTF8String:argv[i]];
+}
+
+- (void)__setenv {
+  i++;
+  NSArray *parts = [[NSString stringWithUTF8String:argv[i]] componentsSeparatedByString:@"="];
+  [environment setObject:[parts objectAtIndex:1] forKey:[parts objectAtIndex:0]];
+}
+
+- (void)__env {
+  i++;
+  NSString *envFilePath = [[NSString stringWithUTF8String:argv[i]] expandPath];
+  environment = [NSDictionary dictionaryWithContentsOfFile:envFilePath];
+  if (!environment) {
+    fprintf(stderr, "Could not read environment from file: %s\n", argv[i]);
+    [self printUsage];
+    exit(EXIT_FAILURE);
+  }
+}
+
+- (void)__stdout {
+  i++;
+  stdoutPath = [[NSString stringWithUTF8String:argv[i]] expandPath];
+  NSLog(@"stdoutPath: %@", stdoutPath);
+}
+
+- (void)__stderr {
+  i++;
+  stderrPath = [[NSString stringWithUTF8String:argv[i]] expandPath];
+  NSLog(@"stderrPath: %@", stderrPath);
+}
+
+- (void)__retina {
+  retinaDevice = YES;
+}
+
+- (void)__tall {
+  tallDevice = YES;
+}
+
+- (void)__args {
+  i++;
+  stopParsing = YES;
+}
 
 /**
  * Execute 'main'
  */
-- (void)runWithArgc:(int)argc argv:(char **)argv {
+- (void)runWithArgc:(int)theArgc argv:(char **)theArgv {
+  argc = theArgc;
+  argv = theArgv;
+  
   if (argc < 2) {
     [self printUsage];
     exit(EXIT_FAILURE);
@@ -305,6 +464,7 @@ NSString *deviceIpadRetina = @"iPad (Retina)";
 
   retinaDevice = NO;
   tallDevice = NO;
+  activateOnStartup = NO;
   exitOnStartup = NO;
   alreadyPrintedData = NO;
   startOnly = strcmp(argv[1], "start") == 0;
@@ -328,91 +488,32 @@ NSString *deviceIpadRetina = @"iPad (Retina)";
       appPath = [[NSString stringWithUTF8String:argv[2]] expandPath];
     }
 
-    NSString *family = nil;
-    NSString *uuid = nil;
-    NSString *stdoutPath = nil;
-    NSString *stderrPath = nil;
-    NSTimeInterval timeout = 30;
-    NSMutableDictionary *environment = [NSMutableDictionary dictionary];
+ family = nil;
+ uuid = nil;
+ stdoutPath = nil;
+ stderrPath = nil;
+    timeout = 30;
+    environment = [NSMutableDictionary dictionary];
 
-    int i = argOffset;
+    i = argOffset;
     for (; i < argc; i++) {
-      if (strcmp(argv[i], "--version") == 0) {
-        printf("%s\n", IOS_SIM_VERSION);
-        exit(EXIT_SUCCESS);
-      } else if (strcmp(argv[i], "--help") == 0) {
-        [self printUsage];
-        exit(EXIT_SUCCESS);
-      } else if (strcmp(argv[i], "--verbose") == 0) {
-        verbose = YES;
-      } else if (strcmp(argv[i], "--exit") == 0) {
-        exitOnStartup = YES;
-      } else if (strcmp(argv[i], "--debug") == 0) {
-        shouldStartDebugger = YES;
-      } else if (strcmp(argv[i], "--use-gdb") == 0) {
-        useGDB = YES;
-      } else if (strcmp(argv[i], "--timeout") == 0) {
-        if (i + 1 < argc) {
-          timeout = [[NSString stringWithUTF8String:argv[++i]] doubleValue];
-          NSLog(@"Timeout: %f second(s)", timeout);
-        }
-      }
-      else if (strcmp(argv[i], "--sdk") == 0) {
-        i++;
-        NSString* ver = [NSString stringWithCString:argv[i] encoding:NSUTF8StringEncoding];
-        NSArray *roots = [DTiPhoneSimulatorSystemRoot knownRoots];
-        for (DTiPhoneSimulatorSystemRoot *root in roots) {
-          NSString *v = [root sdkVersion];
-          if ([v isEqualToString:ver]) {
-            sdkRoot = root;
-            break;
-          }
-        }
-        if (sdkRoot == nil) {
-          fprintf(stderr,"Unknown or unsupported SDK version: %s\n",argv[i]);
-          [self showSDKs];
-          exit(EXIT_FAILURE);
-        }
-      } else if (strcmp(argv[i], "--family") == 0) {
-        i++;
-        family = [NSString stringWithUTF8String:argv[i]];
-      } else if (strcmp(argv[i], "--uuid") == 0) {
-        i++;
-        uuid = [NSString stringWithUTF8String:argv[i]];
-      } else if (strcmp(argv[i], "--setenv") == 0) {
-        i++;
-        NSArray *parts = [[NSString stringWithUTF8String:argv[i]] componentsSeparatedByString:@"="];
-        [environment setObject:[parts objectAtIndex:1] forKey:[parts objectAtIndex:0]];
-      } else if (strcmp(argv[i], "--env") == 0) {
-        i++;
-        NSString *envFilePath = [[NSString stringWithUTF8String:argv[i]] expandPath];
-        environment = [NSDictionary dictionaryWithContentsOfFile:envFilePath];
-        if (!environment) {
-          fprintf(stderr, "Could not read environment from file: %s\n", argv[i]);
-          [self printUsage];
-          exit(EXIT_FAILURE);
-        }
-      } else if (strcmp(argv[i], "--stdout") == 0) {
-        i++;
-        stdoutPath = [[NSString stringWithUTF8String:argv[i]] expandPath];
-        NSLog(@"stdoutPath: %@", stdoutPath);
-      } else if (strcmp(argv[i], "--stderr") == 0) {
-        i++;
-        stderrPath = [[NSString stringWithUTF8String:argv[i]] expandPath];
-        NSLog(@"stderrPath: %@", stderrPath);
-      } else if (strcmp(argv[i], "--retina") == 0) {
-          retinaDevice = YES;
-      } else if (strcmp(argv[i], "--tall") == 0) {
-          tallDevice = YES;
-      } else if (strcmp(argv[i], "--args") == 0) {
-        i++;
-        break;
-      } else {
+      currentArgument = argv[i];
+      
+      NSString *argString = [NSString stringWithUTF8String:currentArgument];
+      NSString *selString = [argString stringByReplacingOccurrencesOfString:@"-" withString:@"_"];
+      SEL selToHandleArgument = NSSelectorFromString(selString);
+      if (![self respondsToSelector:selToHandleArgument]) {
         fprintf(stderr, "unrecognized argument:%s\n", argv[i]);
         [self printUsage];
         exit(EXIT_FAILURE);
       }
+      
+      objc_msgSend(self, selToHandleArgument);
+      
+      if (stopParsing)
+        break;
     }
+    
     NSMutableArray *args = [NSMutableArray arrayWithCapacity:MAX(argc - i,0)];
     for (; i < argc; i++) {
       [args addObject:[NSString stringWithUTF8String:argv[i]]];

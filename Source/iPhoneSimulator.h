@@ -15,6 +15,7 @@
   NSFileHandle *stdoutFileHandle;
   NSFileHandle *stderrFileHandle;
   BOOL startOnly;
+  BOOL activateOnStartup;
   BOOL exitOnStartup;
   BOOL shouldStartDebugger;
   BOOL useGDB;
@@ -22,6 +23,20 @@
   BOOL alreadyPrintedData;
   BOOL retinaDevice;
   BOOL tallDevice;
+  
+  char *currentArgument;
+  int i;
+  int argc;
+  char **argv;
+  
+  NSTimeInterval timeout;
+  NSString *family;
+  NSString *uuid;
+  NSString *stdoutPath;
+  NSString *stderrPath;
+  NSMutableDictionary *environment;
+  
+  BOOL stopParsing;
 }
 
 - (void)runWithArgc:(int)argc argv:(char **)argv;
